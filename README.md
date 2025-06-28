@@ -1,2 +1,2 @@
 # forecasting-solutions
-This for the track of my work at  Avrio Energy
+This repo contains various solutions for time series forecasting problems
