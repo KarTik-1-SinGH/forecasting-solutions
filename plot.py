@@ -70,11 +70,10 @@ def resample_data(df, granularity):
 
     return resampled
 
-
 # ----------------------------
 # Plot using Plotly
 # ----------------------------
-def plot_data(df, output_html="eact_plot.html"):
+def plot_data(df, output_html):
     fig = go.Figure()
 
     for source in ['actual', 'predicted']:
@@ -101,24 +100,29 @@ def plot_data(df, output_html="eact_plot.html"):
 # ----------------------------
 # Main
 # ----------------------------
-def main(granularity='minute'):
-    data_dir = os.path.join(os.path.dirname(__file__), 'data')
+def main(granularity='daily'):
+    base_dir = os.path.dirname(__file__)
+    data_dir = os.path.join(base_dir, 'data')
+    results_dir = os.path.join(base_dir, 'results')
+    os.makedirs(results_dir, exist_ok=True)
+
     eact_csv = os.path.join(data_dir, 'complete_eact.csv')
     missing_csv = os.path.join(data_dir, 'missing_data_info.csv')
+    output_html = os.path.join(results_dir, 'eact_plot.html')
 
     eact_df, missing_df = load_data(eact_csv, missing_csv)
     combined_df = insert_missing_periods(eact_df, missing_df)
     resampled_df = resample_data(combined_df, granularity)
-    plot_data(resampled_df)
+    plot_data(resampled_df, output_html)
 
 # ----------------------------
 # CLI interface
 # ----------------------------
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='Plot Eact with interpolated predicted values.')
-    parser.add_argument('--granularity', type=str, default='minute',
+    parser.add_argument('--granularity', type=str, default='daily',
                         choices=['minute', '15min', '30min', 'hourly', 'daily', 'weekly'],
-                        help='Granularity of the data')
+                        help='Granularity of the data (default: daily)')
     args = parser.parse_args()
 
     main(args.granularity)
