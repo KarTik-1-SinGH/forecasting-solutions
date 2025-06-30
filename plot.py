@@ -6,90 +6,65 @@ import os
 import argparse
 
 # ----------------------------
-# Load and preprocess the data
+# Load and tag data
 # ----------------------------
-def load_data(eact_path, missing_info_path):
+def load_and_label_data(eact_path, missing_info_path):
     eact_df = pd.read_csv(eact_path, parse_dates=['time'])
     missing_df = pd.read_csv(missing_info_path, parse_dates=['gap_start_time', 'gap_end_time'])
-    eact_df.set_index('time', inplace=True)
-    return eact_df, missing_df
 
-# ----------------------------
-# Fill missing periods with predicted values (NaN)
-# ----------------------------
-def insert_missing_periods(eact_df, missing_df, freq='1min'):
-    predicted_rows = []
-
-    for _, row in missing_df.iterrows():
-        time_range = pd.date_range(start=row['gap_start_time'], end=row['gap_end_time'], freq=freq)
-        for t in time_range:
-            if t not in eact_df.index:
-                predicted_rows.append({
-                    'time': t,
-                    'Eact': np.nan,
-                    'source': 'predicted'
-                })
-
-    predicted_df = pd.DataFrame(predicted_rows).set_index('time')
-    eact_df = eact_df.copy()
+    # Mark each row as 'predicted' or 'actual' based on gap periods
     eact_df['source'] = 'actual'
-    combined = pd.concat([eact_df, predicted_df])
-    combined = combined[~combined.index.duplicated()].sort_index()
-    
-    # Linear interpolation for predicted values
-    combined['Eact'] = combined['Eact'].interpolate(method='time')
-    combined['source'] = combined['source'].fillna('predicted')
-    
+    for _, row in missing_df.iterrows():
+        mask = (eact_df['time'] >= row['gap_start_time']) & (eact_df['time'] <= row['gap_end_time'])
+        eact_df.loc[mask, 'source'] = 'predicted'
+
+    return eact_df
+
+# ----------------------------
+# Resample to daily granularity
+# ----------------------------
+def aggregate_daily(df):
+    df.set_index('time', inplace=True)
+
+    # Separate actual and predicted data
+    actual_df = df[df['source'] == 'actual'][['Eact']]
+    predicted_df = df[df['source'] == 'predicted'][['Eact']]
+
+    # Resample both individually
+    daily_actual = actual_df.resample('D').mean().reset_index()
+    daily_actual['source'] = 'actual'
+
+    daily_pred = predicted_df.resample('D').mean().reset_index()
+    daily_pred['source'] = 'predicted'
+
+    # Combine, prioritize actual where both exist
+    combined = pd.concat([daily_pred, daily_actual])  # actual last so it overwrites
+    combined = combined.sort_values('time').drop_duplicates(subset='time', keep='last')
+
     return combined
 
-# ----------------------------
-# Resample data to selected granularity
-# ----------------------------
-def resample_data(df, granularity):
-    rule_map = {
-        'minute': '1min',
-        '15min': '15min',
-        '30min': '30min',
-        'hourly': 'H',
-        'daily': 'D',
-        'weekly': 'W'
-    }
-
-    if granularity not in rule_map:
-        raise ValueError(f"Invalid granularity: {granularity}. Choose from {list(rule_map.keys())}")
-    
-    rule = rule_map[granularity]
-
-    # Resample only numeric values (Eact), grouped by source
-    resampled = (
-        df[['Eact']].groupby(df['source'])
-        .resample(rule)
-        .mean()
-        .reset_index()
-    )
-
-    return resampled
 
 # ----------------------------
-# Plot using Plotly
+# Plot cleanly
 # ----------------------------
 def plot_data(df, output_html):
     fig = go.Figure()
 
-    for source in ['actual', 'predicted']:
-        sub_df = df[df['source'] == source]
+    for src, color, dash in [('actual', 'blue', 'solid'), ('predicted', 'orange', 'dot')]:
+        seg = df.copy()
+        seg.loc[seg['source'] != src, 'Eact'] = None  # mask other values
         fig.add_trace(go.Scatter(
-            x=sub_df['time'],
-            y=sub_df['Eact'],
-            mode='lines+markers',
-            name=source,
-            line=dict(shape='spline'),
-            opacity=0.9 if source == 'actual' else 0.6
+            x=seg['time'],
+            y=seg['Eact'],
+            mode='lines',
+            name=src.capitalize(),
+            line=dict(color=color, width=2, dash=dash),
+            connectgaps=False
         ))
 
     fig.update_layout(
-        title="Eact with Predicted Data Highlighted",
-        xaxis_title="Time",
+        title="Daily Aggregated Eact with Predicted Segments Highlighted",
+        xaxis_title="Date",
         yaxis_title="Eact (kWh)",
         hovermode='x unified',
         template="plotly_white"
@@ -100,29 +75,22 @@ def plot_data(df, output_html):
 # ----------------------------
 # Main
 # ----------------------------
-def main(granularity='daily'):
+def main():
     base_dir = os.path.dirname(__file__)
     data_dir = os.path.join(base_dir, 'data')
     results_dir = os.path.join(base_dir, 'results')
     os.makedirs(results_dir, exist_ok=True)
 
-    eact_csv = os.path.join(data_dir, 'complete_eact.csv')
-    missing_csv = os.path.join(data_dir, 'missing_data_info.csv')
+    eact_path = os.path.join(data_dir, 'complete_eact.csv')
+    missing_path = os.path.join(data_dir, 'missing_data_info.csv')
     output_html = os.path.join(results_dir, 'eact_plot.html')
 
-    eact_df, missing_df = load_data(eact_csv, missing_csv)
-    combined_df = insert_missing_periods(eact_df, missing_df)
-    resampled_df = resample_data(combined_df, granularity)
-    plot_data(resampled_df, output_html)
+    full_df = load_and_label_data(eact_path, missing_path)
+    daily_df = aggregate_daily(full_df)
+    plot_data(daily_df, output_html)
 
 # ----------------------------
-# CLI interface
+# CLI
 # ----------------------------
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description='Plot Eact with interpolated predicted values.')
-    parser.add_argument('--granularity', type=str, default='daily',
-                        choices=['minute', '15min', '30min', 'hourly', 'daily', 'weekly'],
-                        help='Granularity of the data (default: daily)')
-    args = parser.parse_args()
-
-    main(args.granularity)
+    main()
